@@ -35,7 +35,7 @@ pillow==10.1.0
 # Add these to your existing requirements.txt
 langchain==0.1.0
 langchain-google-vertexai==0.1.0
-langchain-community==0.0.10
+langchain-community==0.3.27
 chromadb==0.4.22
 sqlalchemy==2.0.25
 sentence-transformers==2.2.2
