@@ -1,0 +1,426 @@
+# tests/conftest.py
+"""
+Pytest configuration and fixtures for Vritti Invoice AI tests
+"""
+
+import pytest
+import requests
+import io
+from PIL import Image
+from pathlib import Path
+
+
+@pytest.fixture
+def api_client():
+    """Fixture providing API client for tests"""
+    base_url = "http://localhost:8000"
+    session = requests.Session()
+    session.timeout = 30
+
+    # Check if server is running
+    try:
+        response = session.get(base_url)
+        if response.status_code != 200:
+            pytest.skip("Server not running or not accessible")
+    except requests.exceptions.ConnectionError:
+        pytest.skip("Server not running at http://localhost:8000")
+
+    return session, base_url
+
+
+@pytest.fixture
+def test_invoice_image():
+    """Fixture providing a test invoice image"""
+    img = Image.new('RGB', (800, 600), color='white')
+    img_buffer = io.BytesIO()
+    img.save(img_buffer, format='PNG')
+    return img_buffer.getvalue()
+
+
+@pytest.fixture
+def test_pdf_content():
+    """Fixture providing test PDF content"""
+    # Simple PDF header - for testing file type detection
+    pdf_content = b'%PDF-1.4\n1 0 obj\n<<\n/Type /Catalog\n/Pages 2 0 R\n>>\nendobj\n'
+    return pdf_content
+
+
+# tests/test_api_endpoints.py
+"""
+Test individual API endpoints
+"""
+
+import pytest
+import requests
+
+
+class TestAPIEndpoints:
+    """Test all API endpoints"""
+
+    def test_health_endpoint(self, api_client):
+        """Test health check endpoint"""
+        session, base_url = api_client
+
+        response = session.get(f"{base_url}/")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert "Vritti Invoice AI" in data["message"]
+        assert "features" in data
+
+    def test_config_endpoint(self, api_client):
+        """Test configuration endpoint"""
+        session, base_url = api_client
+
+        response = session.get(f"{base_url}/config")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert "supported_currencies" in data
+        assert "features" in data
+        assert len(data["supported_currencies"]) >= 30
+
+    def test_mobile_dashboard(self, api_client):
+        """Test mobile dashboard endpoint"""
+        session, base_url = api_client
+
+        response = session.get(f"{base_url}/api/v1/mobile/dashboard")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["app_name"] == "Vritti Invoice AI"
+        assert data["status"] == "healthy"
+
+
+class TestInvoiceProcessing:
+    """Test invoice processing functionality"""
+
+    def test_process_invoice_png(self, api_client, test_invoice_image):
+        """Test processing PNG invoice"""
+        session, base_url = api_client
+
+        files = {"file": ("test.png", test_invoice_image, "image/png")}
+        response = session.post(f"{base_url}/api/v1/mobile/process-invoice", files=files)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "processing_time" in data
+        assert "mobile_optimized" in data
+
+    def test_process_invoice_validation(self, api_client):
+        """Test invoice processing validation"""
+        session, base_url = api_client
+
+        # Test no file
+        response = session.post(f"{base_url}/api/v1/mobile/process-invoice")
+        assert response.status_code == 422
+
+        # Test invalid file type
+        files = {"file": ("test.txt", b"invalid content", "text/plain")}
+        response = session.post(f"{base_url}/api/v1/mobile/process-invoice", files=files)
+        assert response.status_code == 400
+
+    def test_batch_processing(self, api_client, test_invoice_image):
+        """Test batch processing"""
+        session, base_url = api_client
+
+        files = [
+            ("files", ("test1.png", test_invoice_image, "image/png")),
+            ("files", ("test2.png", test_invoice_image, "image/png"))
+        ]
+
+        response = session.post(f"{base_url}/batch-process", files=files)
+        assert response.status_code == 200
+
+        data = response.json()
+        assert "batch_results" in data
+        assert data["total_files"] == 2
+
+
+# tests/test_performance.py
+"""
+Performance and load testing
+"""
+
+import pytest
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+class TestPerformance:
+    """Performance test cases"""
+
+    def test_response_time(self, api_client, test_invoice_image):
+        """Test response time for single request"""
+        session, base_url = api_client
+
+        start_time = time.time()
+        files = {"file": ("test.png", test_invoice_image, "image/png")}
+        response = session.post(f"{base_url}/api/v1/mobile/process-invoice", files=files)
+        end_time = time.time()
+
+        assert response.status_code == 200
+        response_time = end_time - start_time
+
+        # Response should be within reasonable time (adjust as needed)
+        assert response_time < 30.0, f"Response time too slow: {response_time:.2f}s"
+
+    @pytest.mark.slow
+    def test_concurrent_requests(self, api_client, test_invoice_image):
+        """Test concurrent request handling"""
+        session, base_url = api_client
+
+        def make_request(request_id):
+            files = {"file": (f"test_{request_id}.png", test_invoice_image, "image/png")}
+            response = session.post(f"{base_url}/api/v1/mobile/process-invoice", files=files)
+            return response.status_code == 200
+
+        # Test with 5 concurrent requests
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(make_request, i) for i in range(5)]
+            results = [future.result() for future in as_completed(futures)]
+
+        # At least 80% should succeed
+        success_rate = sum(results) / len(results)
+        assert success_rate >= 0.8, f"Success rate too low: {success_rate*100:.1f}%"
+
+
+# tests/test_integration.py
+"""
+Integration tests for the complete system
+"""
+
+import pytest
+import json
+from pathlib import Path
+
+
+class TestSystemIntegration:
+    """Full system integration tests"""
+
+    def test_end_to_end_processing(self, api_client, test_invoice_image):
+        """Test complete end-to-end invoice processing"""
+        session, base_url = api_client
+
+        # Step 1: Check system health
+        health_response = session.get(f"{base_url}/")
+        assert health_response.status_code == 200
+
+        # Step 2: Get configuration
+        config_response = session.get(f"{base_url}/config")
+        assert config_response.status_code == 200
+        config = config_response.json()
+
+        # Step 3: Process invoice
+        files = {"file": ("test_invoice.png", test_invoice_image, "image/png")}
+        process_response = session.post(f"{base_url}/api/v1/mobile/process-invoice", files=files)
+        assert process_response.status_code == 200
+
+        result = process_response.json()
+
+        # Verify processing results contain expected fields
+        expected_fields = ["processing_time", "mobile_optimized", "global_support"]
+        for field in expected_fields:
+            assert field in result, f"Missing field: {field}"
+
+        # Verify mobile optimization is enabled
+        assert result["mobile_optimized"] is True
+
+        # Verify multi-currency support
+        assert "supported_currencies" in result
+        assert len(result["supported_currencies"]) >= 30
+
+    def test_feature_availability(self, api_client):
+        """Test that all expected features are available"""
+        session, base_url = api_client
+
+        config_response = session.get(f"{base_url}/config")
+        config = config_response.json()
+
+        expected_features = [
+            "document_ai", "ocr_service", "hybrid_processing",
+            "image_enhancement", "multi_currency", "global_support"
+        ]
+
+        features = config["features"]
+        for feature in expected_features:
+            assert feature in features, f"Missing feature: {feature}"
+            # Note: Some features might be False if not configured (like document_ai)
+            # Just check they are present in the response
+
+
+# pytest.ini
+"""
+[tool:pytest]
+minversion = 6.0
+addopts = -ra -q --tb=short
+testpaths = tests
+markers =
+    slow: marks tests as slow (deselect with '-m "not slow"')
+    integration: marks tests as integration tests
+    unit: marks tests as unit tests
+    performance: marks tests as performance tests
+python_files = test_*.py
+python_classes = Test*
+python_functions = test_*
+filterwarnings =
+    ignore::UserWarning
+    ignore::DeprecationWarning
+"""
+
+
+# requirements-test.txt
+"""
+pytest>=7.0.0
+requests>=2.25.0
+Pillow>=9.0.0
+pytest-cov>=4.0.0
+pytest-xdist>=3.0.0
+pytest-html>=3.1.0
+pytest-json-report>=1.5.0
+"""
+
+
+# tests/test_utils.py
+"""
+Utility functions for tests
+"""
+
+import json
+import time
+from pathlib import Path
+from typing import Dict, Any, List
+
+
+class TestReporter:
+    """Generate test reports"""
+
+    def __init__(self):
+        self.results = []
+
+    def add_result(self, test_name: str, status: str, duration: float, details: Dict[str, Any] = None):
+        """Add a test result"""
+        self.results.append({
+            "test_name": test_name,
+            "status": status,
+            "duration": duration,
+            "timestamp": time.time(),
+            "details": details or {}
+        })
+
+    def generate_html_report(self, output_path: str = "test_report.html"):
+        """Generate HTML test report"""
+        html_content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Vritti Invoice AI Test Report</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+        .header {{ background: #f4f4f4; padding: 20px; border-radius: 5px; }}
+        .summary {{ margin: 20px 0; }}
+        .test-result {{ margin: 10px 0; padding: 10px; border-radius: 3px; }}
+        .pass {{ background: #d4edda; border-left: 4px solid #28a745; }}
+        .fail {{ background: #f8d7da; border-left: 4px solid #dc3545; }}
+        .partial {{ background: #fff3cd; border-left: 4px solid #ffc107; }}
+        table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+        th {{ background-color: #f2f2f2; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚀 Vritti Invoice AI Test Report</h1>
+        <p>Generated on: {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
+    </div>
+
+    <div class="summary">
+        <h2>Summary</h2>
+        <p>Total Tests: {len(self.results)}</p>
+        <p>Passed: {sum(1 for r in self.results if r['status'] == 'PASS')}</p>
+        <p>Failed: {sum(1 for r in self.results if r['status'] == 'FAIL')}</p>
+        <p>Partial: {sum(1 for r in self.results if r['status'] == 'PARTIAL')}</p>
+    </div>
+
+    <h2>Test Results</h2>
+    <table>
+        <tr>
+            <th>Test Name</th>
+            <th>Status</th>
+            <th>Duration (s)</th>
+            <th>Details</th>
+        </tr>
+        {''.join(self._format_result_row(r) for r in self.results)}
+    </table>
+</body>
+</html>
+        """
+
+        with open(output_path, 'w') as f:
+            f.write(html_content)
+
+    def _format_result_row(self, result: Dict[str, Any]) -> str:
+        """Format a single result row for HTML"""
+        status_class = result['status'].lower()
+        details_str = json.dumps(result['details'], indent=2) if result['details'] else ''
+
+        return f"""
+        <tr class="{status_class}">
+            <td>{result['test_name']}</td>
+            <td>{result['status']}</td>
+            <td>{result['duration']:.2f}</td>
+            <td><pre>{details_str}</pre></td>
+        </tr>
+        """
+
+    def save_json_report(self, output_path: str = "test_results.json"):
+        """Save results as JSON"""
+        with open(output_path, 'w') as f:
+            json.dump({
+                "summary": {
+                    "total_tests": len(self.results),
+                    "passed": sum(1 for r in self.results if r['status'] == 'PASS'),
+                    "failed": sum(1 for r in self.results if r['status'] == 'FAIL'),
+                    "partial": sum(1 for r in self.results if r['status'] == 'PARTIAL'),
+                    "generated_at": time.time()
+                },
+                "results": self.results
+            }, f, indent=2)
+
+
+def create_sample_invoices():
+    """Create sample invoice files for testing"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    samples_dir = Path("tests/sample_invoices")
+    samples_dir.mkdir(exist_ok=True)
+
+    # Create different types of sample invoices
+    invoice_types = [
+        {"name": "usd_invoice.png", "currency": "USD", "amount": "$1,234.56"},
+        {"name": "eur_invoice.png", "currency": "EUR", "amount": "€987.65"},
+        {"name": "gbp_invoice.png", "currency": "GBP", "amount": "£543.21"},
+    ]
+
+    for invoice_info in invoice_types:
+        img = Image.new('RGB', (800, 1000), color='white')
+        draw = ImageDraw.Draw(img)
+
+        # Use default font
+        font = ImageFont.load_default()
+
+        # Draw invoice content
+        draw.text((50, 50), f"TEST COMPANY ({invoice_info['currency']})", fill='black', font=font)
+        draw.text((50, 100), "INVOICE", fill='black', font=font)
+        draw.text((50, 150), f"Total: {invoice_info['amount']}", fill='black', font=font)
+
+        # Save image
+        img.save(samples_dir / invoice_info['name'])
+
+    print(f"Created {len(invoice_types)} sample invoices in {samples_dir}")
+
+
+if __name__ == "__main__":
+    create_sample_invoices()
