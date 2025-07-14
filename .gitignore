@@ -60,3 +60,4 @@ node_modules/
 service-account*.json
 gcp-key*.json
 invoice-processor-key.json
+vritti-dev-key.json
