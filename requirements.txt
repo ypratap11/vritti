@@ -64,3 +64,9 @@ isort>=5.13.2           # Import sorting
 
 # Performance & Load Testing (Python 3.12 compatible)
 locust>=2.17.0          # Load testing
+
+#LLM's to install
+google-generativeai
+openai
+anthropic
+python-dotenv

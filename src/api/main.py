@@ -13,6 +13,7 @@ import os
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from src.api.v1.conversation import router as conversation_router
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
@@ -27,6 +28,11 @@ from src.services.ocr_service import ocr_service
 from src.services.hybrid_service import hybrid_service
 from src.services.image_service import image_service
 from src.processors.currency.currency_config import get_all_currency_codes
+
+from src.api.v1 import mobile
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
+
 
 # Initialize settings
 settings = get_settings()
@@ -45,6 +51,14 @@ app = FastAPI(
     version=settings.app_version,
     debug=settings.debug
 )
+
+# Mount the frontend landing page
+app.mount("/landing", StaticFiles(directory="frontend/landing"), name="landing")
+
+# Add this after your FastAPI app creation
+app.include_router(conversation_router, prefix="/api/v1")
+app.include_router(mobile.router, prefix="/api/v1")
+
 
 # Add CORS middleware using config
 app.add_middleware(
@@ -110,8 +124,18 @@ async def startup_event():
 
     logger.info("🎉 Application startup complete!")
 
-
 @app.get("/")
+async def root():
+    """Root endpoint - redirect to landing page or return health info"""
+    # You can add a query parameter to get health info: /?health=true
+    from fastapi import Request
+
+    # If you want health info, you can access it via /?health=true
+    # Otherwise, redirect to landing page
+    return RedirectResponse(url="/landing/index.html")
+
+# Add a separate health endpoint:
+@app.get("/health")
 async def health_check():
     """Health check endpoint"""
     return {
@@ -131,7 +155,6 @@ async def health_check():
             "agent_features": settings.enable_agent_features
         }
     }
-
 
 @app.get("/config")
 async def get_config():

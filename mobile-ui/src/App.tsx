@@ -18,6 +18,7 @@ const VrittiApp: React.FC<VrittiAppProps> = () => {
 
   const detectBackendPort = async (): Promise<void> => {
     const possibleUrls = [
+      'http://127.0.0.1:8000',
       'http://localhost:8000',
       'http://localhost:8001',
       'http://192.168.4.185:8000',
@@ -28,7 +29,7 @@ const VrittiApp: React.FC<VrittiAppProps> = () => {
 
     for (const url of possibleUrls) {
       try {
-        const response = await fetch(`${url}/api/v1/mobile/dashboard`, {
+        const response = await fetch(`${url}/api/v1/mobile/health`, {
           method: 'GET',
           signal: AbortSignal.timeout(3000) // 3 second timeout
         });

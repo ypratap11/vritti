@@ -81,12 +81,93 @@ class Settings(BaseSettings):
     enable_mobile_optimization: bool = True
 
     # LLM Settings
-    default_llm_model: str = "gemini-pro"
+    default_llm_model: str = "gemini-1.5-flash"
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
 
     # Tesseract Settings
     tesseract_cmd: Optional[str] = None
+
+    # LLM & AI API Settings - Enhanced
+    default_llm_model: str = "gemini-1.5-flash"
+
+    # Google/Gemini API Keys
+    gemini_api_key: str = "AIzaSyCxwqNDBjxFEvnJH1jVz61OAFgSr6L2KK4"
+    google_ai_api_key: Optional[str] = None  # Alternative name
+
+    # OpenAI API Keys
+    openai_api_key: Optional[str] = None
+    openai_organization: Optional[str] = None
+
+    # Anthropic/Claude API Keys
+    anthropic_api_key: Optional[str] = None
+
+    # Azure OpenAI (if you plan to use it)
+    azure_openai_api_key: Optional[str] = None
+    azure_openai_endpoint: Optional[str] = None
+    azure_openai_api_version: str = "2024-02-01"
+
+    # LLM Routing & Cost Settings
+    llm_cost_threshold: float = 0.01  # Switch to cheaper model above this cost
+    enable_intelligent_routing: bool = True
+    fallback_model: str = "gemini-flash"
+
+    # Rate Limiting
+    max_requests_per_minute: int = 60
+    max_tokens_per_request: int = 4000
+
+    # LLM Model Preferences by Complexity
+    simple_tasks_model: str = "gemini-flash"  # Cheapest for basic tasks
+    medium_tasks_model: str = "gpt-4o-mini"  # Balance of cost/quality
+    complex_tasks_model: str = "claude-sonnet"  # Best quality
+
+    @field_validator("gemini_api_key", mode="before")
+    @classmethod
+    def set_gemini_key(cls, v):
+        """Set Gemini API key from environment"""
+        return v or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_AI_API_KEY")
+
+    @field_validator("openai_api_key", mode="before")
+    @classmethod
+    def set_openai_key(cls, v):
+        """Set OpenAI API key from environment"""
+        return v or os.getenv("OPENAI_API_KEY")
+
+    @field_validator("anthropic_api_key", mode="before")
+    @classmethod
+    def set_anthropic_key(cls, v):
+        """Set Anthropic API key from environment"""
+        return v or os.getenv("ANTHROPIC_API_KEY")
+
+    def validate_api_keys(self) -> dict:
+        """Validate which API keys are available"""
+        available_providers = {}
+
+        if self.gemini_api_key:
+            available_providers["gemini"] = True
+        if self.openai_api_key:
+            available_providers["openai"] = True
+        if self.anthropic_api_key:
+            available_providers["anthropic"] = True
+
+        return available_providers
+
+    def get_llm_config(self) -> dict:
+        """Get LLM configuration for AskVritti"""
+        return {
+            "gemini_api_key": self.gemini_api_key,
+            "openai_api_key": None,  # Force disable OpenAI self.openai_api_key,
+            "anthropic_api_key": None,  # Force disable Anthropic self.anthropic_api_key,
+            "gcp_project_id": self.gcp_project_id,
+            "enable_intelligent_routing":  False,  # Disable routing, use Gemini only self.enable_intelligent_routing,
+            "cost_threshold": self.llm_cost_threshold,
+            "fallback_model": self.fallback_model,
+            "model_preferences": {
+                "simple": self.simple_tasks_model,
+                "medium": self.medium_tasks_model,
+                "complex": self.complex_tasks_model
+            }
+        }
 
     @field_validator("gcp_project_id", mode="before")
     @classmethod

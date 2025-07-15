@@ -1,23 +1,51 @@
-from .connection import get_db, create_tables, get_db_session, SessionLocal, Base
-from .models import (
-    ProcessedInvoice,
-    ConversationHistory,
-    save_invoice_to_db,
-    search_invoices_by_vendor,
-    get_recent_invoices,
-    get_invoices_by_amount_range
+# src/database/__init__.py
+from .connection import (
+    get_db,
+    create_tables,
+    get_db_session,
+    check_database_health,
+    get_database_info,
+    DatabaseTransaction,
+    Base,
+    engine,
+    SessionLocal
 )
+
+# Import models from the new location
+try:
+    from src.models.tenant import (
+        Tenant,
+        TenantUser,
+        SubscriptionPlan,
+        TenantUsage,
+        TenantAPIKey,
+        Document,
+        Invoice,
+        AuditLog,
+        WebhookEndpoint
+    )
+except ImportError:
+    # Models not yet created
+    pass
 
 __all__ = [
     'get_db',
     'create_tables',
     'get_db_session',
-    'SessionLocal',
+    'check_database_health',
+    'get_database_info',
+    'DatabaseTransaction',
     'Base',
-    'ProcessedInvoice',
-    'ConversationHistory',
-    'save_invoice_to_db',
-    'search_invoices_by_vendor',
-    'get_recent_invoices',
-    'get_invoices_by_amount_range'
+    'engine',
+    'SessionLocal',
+    # Models (if available)
+    'Tenant',
+    'TenantUser',
+    'SubscriptionPlan',
+    'TenantUsage',
+    'TenantAPIKey',
+    'Document',
+    'Invoice',
+    'AuditLog',
+    'WebhookEndpoint'
 ]
