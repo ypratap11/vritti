@@ -1,0 +1,454 @@
+# .github/workflows/vritti-ci.yml
+# GitHub Actions CI/CD Pipeline for Vritti Invoice AI
+name: 🚀 Vritti Invoice AI CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  PYTHON_VERSION: '3.9'
+  NODE_VERSION: '18'
+
+jobs:
+  # Job 1: Code Quality & Security
+  code-quality:
+    name: 🔍 Code Quality & Security
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 black isort safety bandit
+          pip install -r requirements.txt
+
+      - name: Code Formatting Check (Black)
+        run: black --check --diff src/ tests/
+
+      - name: Import Sorting Check (isort)
+        run: isort --check-only --diff src/ tests/
+
+      - name: Linting (Flake8)
+        run: flake8 src/ tests/ --max-line-length=88 --extend-ignore=E203,W503
+
+      - name: Security Scan (Bandit)
+        run: bandit -r src/ -f json -o bandit-report.json
+
+      - name: Dependency Security Check
+        run: safety check --json --output safety-report.json
+
+      - name: Upload Security Reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            safety-report.json
+
+  # Job 2: Unit Tests
+  unit-tests:
+    name: 🧪 Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.9', '3.10', '3.11']
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache Dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov pytest-xdist
+
+      - name: Run Unit Tests
+        run: |
+          pytest tests/unit/ -v --cov=src --cov-report=xml --cov-report=html
+
+      - name: Upload Coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+
+      - name: Upload Coverage Reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-reports-${{ matrix.python-version }}
+          path: htmlcov/
+
+  # Job 3: Integration Tests
+  integration-tests:
+    name: 🔗 Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:6-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+
+      - name: Setup Test Environment
+        run: |
+          # Create test directories
+          mkdir -p tests/test_files
+          mkdir -p logs
+          
+          # Set test environment variables
+          echo "ENVIRONMENT=test" >> $GITHUB_ENV
+          echo "GOOGLE_APPLICATION_CREDENTIALS=" >> $GITHUB_ENV
+          echo "ENABLE_AGENT_FEATURES=false" >> $GITHUB_ENV
+
+      - name: Start Vritti API Server
+        run: |
+          uvicorn src.api.main:app --host 0.0.0.0 --port 8000 &
+          sleep 10  # Wait for server to start
+
+      - name: Health Check
+        run: |
+          curl -f http://localhost:8000/ || exit 1
+
+      - name: Run Integration Tests
+        run: |
+          python tests/test_vritti_system.py --url http://localhost:8000
+
+      - name: Run API Tests
+        run: |
+          pytest tests/integration/ -v --tb=short
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: integration-test-results
+          path: |
+            test_results.json
+            test_report.html
+
+  # Job 4: Performance Tests
+  performance-tests:
+    name: ⚡ Performance Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install locust
+
+      - name: Start Server
+        run: |
+          uvicorn src.api.main:app --host 0.0.0.0 --port 8000 &
+          sleep 10
+
+      - name: Run Performance Tests
+        run: |
+          python tests/test_vritti_system.py --url http://localhost:8000 --performance
+
+      - name: Run Load Tests (Locust)
+        run: |
+          locust -f tests/locustfile.py --headless -u 10 -r 2 -t 30s --host http://localhost:8000
+
+  # Job 5: Security Scanning
+  security-scan:
+    name: 🔒 Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # Job 6: Build & Deploy (Production)
+  deploy-production:
+    name: 🚀 Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [code-quality, unit-tests, integration-tests]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Build Application
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+          # Create deployment package
+          mkdir -p dist
+          tar -czf dist/vritti-ai-${{ github.sha }}.tar.gz \
+            src/ \
+            requirements.txt \
+            config/ \
+            scripts/
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: vritti-ai-build
+          path: dist/
+
+      # Deploy using your preferred method (Docker, SSH, etc.)
+      - name: Deploy to Production Server
+        run: |
+          echo "🚀 Deploying to production..."
+          # Add your deployment script here
+          # Example: rsync, ssh, docker push, etc.
+
+  # Job 7: Deploy Staging
+  deploy-staging:
+    name: 🔄 Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [code-quality, unit-tests]
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Deploy to Staging
+        run: |
+          echo "🔄 Deploying to staging environment..."
+          # Add staging deployment script
+
+  # Job 8: Notify Results
+  notify:
+    name: 📢 Notify Results
+    runs-on: ubuntu-latest
+    needs: [code-quality, unit-tests, integration-tests, performance-tests]
+    if: always()
+    steps:
+      - name: Notify Success
+        if: ${{ needs.unit-tests.result == 'success' && needs.integration-tests.result == 'success' }}
+        run: |
+          echo "✅ All tests passed! Ready for deployment."
+
+      - name: Notify Failure
+        if: ${{ needs.unit-tests.result == 'failure' || needs.integration-tests.result == 'failure' }}
+        run: |
+          echo "❌ Tests failed! Check the logs."
+
+---
+
+# .github/workflows/vritti-nightly.yml
+# Nightly comprehensive testing
+name: 🌙 Nightly Comprehensive Tests
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Run at 2 AM UTC daily
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  comprehensive-tests:
+    name: 🔬 Comprehensive Testing
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        test-suite: [unit, integration, performance, security, compatibility]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-test.txt
+
+      - name: Run ${{ matrix.test-suite }} Tests
+        run: |
+          case "${{ matrix.test-suite }}" in
+            "unit")
+              pytest tests/unit/ -v --cov=src --cov-report=xml
+              ;;
+            "integration")
+              uvicorn src.api.main:app --host 0.0.0.0 --port 8000 &
+              sleep 10
+              python tests/test_vritti_system.py --url http://localhost:8000
+              ;;
+            "performance")
+              uvicorn src.api.main:app --host 0.0.0.0 --port 8000 &
+              sleep 10
+              python tests/test_vritti_system.py --url http://localhost:8000 --performance
+              ;;
+            "security")
+              bandit -r src/ -f json -o bandit-nightly.json
+              safety check --json --output safety-nightly.json
+              ;;
+            "compatibility")
+              # Test with different Python versions, dependencies, etc.
+              python --version
+              pip list
+              ;;
+          esac
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v3
+        with:
+          name: nightly-${{ matrix.test-suite }}-results
+          path: |
+            **/*-nightly.json
+            coverage.xml
+            test_results.json
+
+---
+
+# .github/workflows/docker-build.yml
+# Docker build and push
+name: 🐳 Docker Build & Push
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    name: 🏗️ Build & Push Docker Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+---
+
+# .github/dependabot.yml
+# Dependabot configuration for automatic dependency updates
+version: 2
+updates:
+  # Python dependencies
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "your-username"
+    assignees:
+      - "your-username"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
