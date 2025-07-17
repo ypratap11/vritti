@@ -31,7 +31,11 @@ from sqlalchemy.orm import Session
 
 from src.models.tenant import Tenant, Invoice, Document, TenantUser
 from src.database.connection import get_db_session
+import logging
 
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class LLMProvider(Enum):
     """Available LLM providers"""
@@ -112,6 +116,7 @@ class ExtractedEntity:
     amount: Optional[float] = None
     invoice_number: Optional[str] = None
     date_range: Optional[Tuple[datetime, datetime]] = None
+    approval_status: Optional[str] = None
     approval_status: Optional[str] = None
     category: Optional[str] = None
     urgency: Optional[str] = None
@@ -590,9 +595,29 @@ class AskVrittiAI:
         return context
 
     def classify_intent(self, message: str) -> ConversationIntent:
-        """Classify user intent from message"""
+        """Classify user intent from message - ENHANCED VERSION"""
         message_lower = message.lower()
 
+        # Enhanced patterns with better status detection
+        enhanced_patterns = {
+            ConversationIntent.SEARCH_INVOICES: [
+                r'find.*invoice', r'search.*invoice', r'show.*invoice',
+                r'list.*invoice', r'invoices.*from', r'invoices.*over',
+                r'pending.*invoice', r'approved.*invoice', r'rejected.*invoice',  # NEW!
+                r'show.*pending', r'list.*pending', r'find.*pending',  # NEW!
+                r'show.*approved', r'list.*approved', r'find.*approved',  # NEW!
+                r'invoices.*status', r'status.*pending', r'what.*pending'  # NEW!
+            ],
+            # ... rest of your existing patterns
+        }
+
+        # Check enhanced patterns first
+        for intent, patterns in enhanced_patterns.items():
+            for pattern in patterns:
+                if re.search(pattern, message_lower):
+                    return intent
+
+        # Fallback to original patterns
         for intent, patterns in self.intent_patterns.items():
             for pattern in patterns:
                 if re.search(pattern, message_lower):
@@ -601,14 +626,32 @@ class AskVrittiAI:
         return ConversationIntent.UNKNOWN
 
     def extract_entities(self, message: str) -> ExtractedEntity:
-        """Extract relevant entities from user message"""
+        """Extract relevant entities from user message - FIXED VERSION"""
         entities = ExtractedEntity()
+        message_lower = message.lower()
 
-        # Extract amounts (money patterns)
+        # Status keywords mapping (NEW!)
+        status_keywords = {
+            'pending': ['pending', 'awaiting', 'waiting', 'unprocessed', 'review'],
+            'approved': ['approved', 'accepted', 'authorized', 'signed off'],
+            'rejected': ['rejected', 'denied', 'declined', 'refused'],
+            'paid': ['paid', 'payment sent', 'settled', 'completed'],
+            'overdue': ['overdue', 'late', 'past due', 'expired']
+        }
+
+        # Extract status FIRST (most important for your use case)
+        for status, keywords in status_keywords.items():
+            if any(keyword in message_lower for keyword in keywords):
+                entities.approval_status = status
+                break
+
+        # Extract amounts (money patterns) - IMPROVED
         amount_patterns = [
             r'\$([0-9,]+\.?[0-9]*)',
             r'([0-9,]+\.?[0-9]*)\s*dollars?',
-            r'([0-9,]+\.?[0-9]*)\s*USD'
+            r'([0-9,]+\.?[0-9]*)\s*USD',
+            r'amount\s+of\s+\$?([0-9,]+\.?[0-9]*)',
+            r'total\s+\$?([0-9,]+\.?[0-9]*)'
         ]
         for pattern in amount_patterns:
             match = re.search(pattern, message, re.IGNORECASE)
@@ -620,30 +663,55 @@ class AskVrittiAI:
                 except ValueError:
                     continue
 
-        # Extract invoice numbers
+        # Extract invoice numbers - IMPROVED with better validation
         invoice_patterns = [
-            r'invoice\s*#?\s*([A-Z0-9\-]+)',
-            r'inv[\s\-#]*([A-Z0-9\-]+)',
-            r'#([A-Z0-9\-]+)'
+            r'invoice\s*#?\s*([A-Z0-9\-]{3,20})',  # Min 3 chars, max 20
+            r'inv[\s\-#]*([A-Z0-9\-]{3,20})',
+            r'#([A-Z0-9\-]{3,20})',
+            r'number\s+([A-Z0-9\-]{3,20})'
         ]
         for pattern in invoice_patterns:
             match = re.search(pattern, message, re.IGNORECASE)
             if match:
-                entities.invoice_number = match.group(1)
-                break
+                candidate = match.group(1)
+                # Validate: not just single characters or common words
+                if len(candidate) >= 3 and candidate.lower() not in ['show', 'pending', 'the', 'and']:
+                    entities.invoice_number = candidate
+                    break
 
-        # Extract vendor names
+        # Extract vendor names - COMPLETELY REWRITTEN to avoid false matches
+        # Only extract if specific vendor indicators are present
         vendor_patterns = [
-            r'from\s+([A-Z][a-zA-Z\s&.,-]+?)(?:\s+for|\s+invoice|\s*$)',
-            r'vendor\s+([A-Z][a-zA-Z\s&.,-]+?)(?:\s+for|\s+invoice|\s*$)',
-            r'([A-Z][a-zA-Z\s&.,-]{2,})\s+invoice'
+            r'(?:from|vendor|supplier|company)\s+([A-Z][a-zA-Z\s&.,\-]{2,40})(?:\s+(?:invoice|for|bill)|\s*$)',
+            r'invoices?\s+from\s+([A-Z][a-zA-Z\s&.,\-]{2,40})(?:\s|$)',
+            r'([A-Z][a-zA-Z\s&.,\-]{2,40})\s+(?:invoice|bill|statement)',
+            r'paid\s+to\s+([A-Z][a-zA-Z\s&.,\-]{2,40})(?:\s|$)'
         ]
+
         for pattern in vendor_patterns:
             match = re.search(pattern, message)
             if match:
-                vendor = match.group(1).strip()
-                if len(vendor) > 2 and vendor.lower() not in ['the', 'and', 'for', 'with']:
-                    entities.vendor_name = vendor
+                vendor_candidate = match.group(1).strip()
+
+                # Additional validation: exclude common false matches
+                exclude_words = [
+                    'show me', 'pending', 'approved', 'rejected', 'total', 'amount',
+                    'invoices', 'invoice', 'bills', 'payments', 'dollars', 'usd',
+                    'the', 'and', 'or', 'but', 'with', 'from', 'for'
+                ]
+
+                vendor_lower = vendor_candidate.lower()
+
+                # Only accept if:
+                # 1. Not in exclude words
+                # 2. Has reasonable length (3-40 chars)
+                # 3. Contains at least one letter
+                # 4. Not a query word
+                if (vendor_lower not in exclude_words and
+                        3 <= len(vendor_candidate) <= 40 and
+                        any(c.isalpha() for c in vendor_candidate) and
+                        not any(word in vendor_lower for word in ['show', 'pending', 'search', 'find', 'list'])):
+                    entities.vendor_name = vendor_candidate
                     break
 
         return entities
@@ -982,11 +1050,11 @@ Respond as Ask Vritti in a professional yet friendly tone."""
             db.close()
 
     async def _handle_search_invoices(
-            self,
-            context: ConversationContext,
-            entities: ExtractedEntity
-    ) -> AIResponse:
-        """Handle invoice search with enhanced filtering"""
+        self,
+        context: ConversationContext,
+        entities: ExtractedEntity
+) -> AIResponse:
+
         db = get_db_session()
         try:
             query = db.query(Invoice).filter(
@@ -994,25 +1062,52 @@ Respond as Ask Vritti in a professional yet friendly tone."""
                 Invoice.deleted_at.is_(None)
             )
 
+            # Apply status filter if extracted (THIS IS THE KEY FIX!)
+            if entities.approval_status:
+                query = query.filter(Invoice.approval_status == entities.approval_status)
+                logger.info(f"🔍 Filtering by status: {entities.approval_status}")
+
+            # Apply vendor filter if extracted
             if entities.vendor_name:
                 query = query.filter(Invoice.vendor_name.ilike(f"%{entities.vendor_name}%"))
+                logger.info(f"🔍 Filtering by vendor: {entities.vendor_name}")
 
+            # Apply amount filter if extracted
             if entities.amount:
                 tolerance = entities.amount * 0.1
                 query = query.filter(
                     Invoice.total_amount >= entities.amount - tolerance,
                     Invoice.total_amount <= entities.amount + tolerance
                 )
+                logger.info(f"🔍 Filtering by amount: ${entities.amount}")
 
             invoices = query.order_by(Invoice.created_at.desc()).limit(10).all()
 
             if not invoices:
+                # Better error message based on what was searched
+                search_criteria = []
+                if entities.approval_status:
+                    search_criteria.append(f"status '{entities.approval_status}'")
+                if entities.vendor_name:
+                    search_criteria.append(f"vendor '{entities.vendor_name}'")
+                if entities.amount:
+                    search_criteria.append(f"amount ${entities.amount}")
+
+                criteria_text = " and ".join(search_criteria) if search_criteria else "your criteria"
+
                 return AIResponse(
-                    text="I couldn't find any invoices matching your criteria. Try a different search or ask me to show all recent invoices.",
-                    intent=ConversationIntent.SEARCH_INVOICES
+                    text=f"I couldn't find any invoices matching {criteria_text}. Try a different search or ask me to show all recent invoices.",
+                    intent=ConversationIntent.SEARCH_INVOICES,
+                    suggested_responses=[
+                        "Show me all recent invoices",
+                        "Show me all pending invoices",
+                        "Show me approved invoices"
+                    ]
                 )
 
-            result_text = f"I found {len(invoices)} invoice(s):\n\n"
+            # Build response with clear status indication
+            status_text = f" {entities.approval_status}" if entities.approval_status else ""
+            result_text = f"I found {len(invoices)}{status_text} invoice(s):\n\n"
             total_amount = 0
 
             for invoice in invoices:

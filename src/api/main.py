@@ -32,7 +32,7 @@ from src.processors.currency.currency_config import get_all_currency_codes
 from src.api.v1 import mobile
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
-
+from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize settings
 settings = get_settings()
@@ -63,7 +63,7 @@ app.include_router(mobile.router, prefix="/api/v1")
 # Add CORS middleware using config
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=["*"],#settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

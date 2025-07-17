@@ -8,6 +8,10 @@ from sqlalchemy.orm import Session
 from src.models.tenant import Invoice, Document, Tenant, TenantUser, AuditLog
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
+from src.utils.currency_parser import parse_currency_to_float, clean_invoice_amounts
+import logging
+
+logger = logging.getLogger(__name__)
 import uuid
 import json
 
@@ -39,35 +43,52 @@ class InvoiceService:
             document_id: Optional[str] = None,
             user_id: Optional[str] = None
     ) -> Invoice:
-        """
-        Save processed invoice to database with tenant isolation
-        Enhanced version of the original save_invoice_to_db function
-        """
+        """Save processed invoice to database - DUBLIN NISSAN FIX"""
 
-        # Create invoice with tenant context
+        logger.info(f"💾 ORIGINAL DATA: {invoice_data}")
+
+        # CRITICAL FIX: Clean currency amounts before database insertion
+        cleaned_data = clean_invoice_amounts(invoice_data.copy())
+        total_amount = parse_currency_to_float(cleaned_data.get('total_amount'))
+        tax_amount = parse_currency_to_float(cleaned_data.get('tax_amount', 0))
+
+        # Ensure non-negative values (database constraints)
+        if total_amount is not None and total_amount < 0:
+            total_amount = 0.0
+        if tax_amount is not None and tax_amount < 0:
+            tax_amount = 0.0
+
+        # Log the Dublin Nissan fix
+        original_total = invoice_data.get('total_amount')
+        if str(original_total) != str(total_amount):
+            logger.info(f"💰 DUBLIN NISSAN FIX APPLIED: '{original_total}' -> {total_amount}")
+
+        # Create invoice with cleaned data
         db_invoice = Invoice(
             id=str(uuid.uuid4()),
             tenant_id=self.tenant_id,
             document_id=document_id,
-            invoice_number=invoice_data.get('invoice_number'),
-            vendor_name=invoice_data.get('vendor_name'),
-            vendor_address=invoice_data.get('vendor_address'),
-            vendor_tax_id=invoice_data.get('vendor_tax_id'),
-            invoice_date=invoice_data.get('invoice_date'),
-            due_date=invoice_data.get('due_date'),
-            total_amount=invoice_data.get('total_amount'),
-            tax_amount=invoice_data.get('tax_amount', 0),
-            currency=invoice_data.get('currency', 'USD'),
-            line_items=invoice_data.get('line_items', []),
+            invoice_number=cleaned_data.get('invoice_number'),
+            vendor_name=cleaned_data.get('vendor_name'),
+            vendor_address=cleaned_data.get('vendor_address'),
+            vendor_tax_id=cleaned_data.get('vendor_tax_id'),
+            invoice_date=cleaned_data.get('invoice_date'),
+            due_date=cleaned_data.get('due_date'),
+            total_amount=total_amount if total_amount is not None else 0.0,  # FIXED!
+            tax_amount=tax_amount if tax_amount is not None else 0.0,  # FIXED!
+            currency=cleaned_data.get('currency', 'USD'),
+            line_items=cleaned_data.get('line_items', []),
             approval_status='pending',
             payment_status='unpaid',
-            notes=invoice_data.get('notes'),
-            tags=invoice_data.get('tags', [])
+            notes=cleaned_data.get('notes'),
+            tags=cleaned_data.get('tags', [])
         )
 
         self.db.add(db_invoice)
         self.db.commit()
         self.db.refresh(db_invoice)
+
+        logger.info(f"✅ DUBLIN NISSAN INVOICE SAVED: ID={db_invoice.id}, Amount=${db_invoice.total_amount}")
 
         # Create audit log
         self._create_audit_log(
@@ -76,13 +97,15 @@ class InvoiceService:
             resource_id=db_invoice.id,
             new_values={
                 "vendor_name": db_invoice.vendor_name,
-                "total_amount": db_invoice.total_amount,
-                "invoice_number": db_invoice.invoice_number
+                "total_amount": float(db_invoice.total_amount) if db_invoice.total_amount else 0.0,
+                "invoice_number": db_invoice.invoice_number,
+                "dublin_nissan_fix": str(original_total) != str(total_amount)
             },
             user_id=user_id
         )
 
         return db_invoice
+
 
     def search_invoices_by_vendor(self, vendor: str, limit: int = 50) -> List[Invoice]:
         """

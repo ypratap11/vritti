@@ -1088,6 +1088,170 @@ async def cleanup_and_create_tenant(db: Session = Depends(get_db)):
             "error_type": type(e).__name__
         }
 
+
+# Add this debug endpoint to your src/api/v1/conversation.py
+
+# Add this FIXED debug endpoint to your src/api/v1/conversation.py
+
+@router.get("/debug/ask-vritti-context")
+async def debug_ask_vritti_context(db: Session = Depends(get_db)):
+    """Debug what context Ask Vritti is actually using"""
+    try:
+        # Import the Invoice model
+        from src.models.tenant import Invoice
+        from src.services.invoice_service import InvoiceService
+
+        # Test the exact path that Ask Vritti uses
+        demo_tenant_id = "demo-tenant-id"
+        demo_user_id = "demo-user-id"
+
+        # Simulate what Ask Vritti's _handle_search_invoices does
+        invoices_query = db.query(Invoice).filter(
+            Invoice.tenant_id == demo_tenant_id,
+            Invoice.deleted_at.is_(None)
+        ).order_by(Invoice.created_at.desc()).limit(10).all()
+
+        # Check pending invoices (for greeting)
+        pending_query = db.query(Invoice).filter(
+            Invoice.tenant_id == demo_tenant_id,
+            Invoice.approval_status == 'pending',
+            Invoice.deleted_at.is_(None)
+        ).count()
+
+        # Test InvoiceService for comparison
+        invoice_service = InvoiceService(db, demo_tenant_id)
+        service_invoices = invoice_service.get_recent_invoices(10)
+        service_pending = invoice_service.get_pending_approvals(10)
+
+        # Check raw database for comparison
+        raw_invoices = db.execute(text("""
+            SELECT tenant_id, vendor_name, total_amount, approval_status 
+            FROM invoices 
+            WHERE deleted_at IS NULL
+            ORDER BY created_at DESC
+        """)).fetchall()
+
+        return {
+            "ask_vritti_simulation": {
+                "tenant_id_used": demo_tenant_id,
+                "user_id_used": demo_user_id,
+                "direct_query_found": len(invoices_query),
+                "pending_count": pending_query,
+                "invoice_details": [
+                    {
+                        "vendor": inv.vendor_name,
+                        "amount": float(inv.total_amount) if inv.total_amount else 0,
+                        "status": inv.approval_status,
+                        "tenant_id": inv.tenant_id
+                    }
+                    for inv in invoices_query
+                ]
+            },
+            "invoice_service_test": {
+                "recent_invoices_found": len(service_invoices),
+                "pending_invoices_found": len(service_pending),
+                "service_results": [
+                    {
+                        "vendor": inv.vendor_name,
+                        "amount": float(inv.total_amount) if inv.total_amount else 0,
+                        "status": inv.approval_status
+                    }
+                    for inv in service_invoices
+                ]
+            },
+            "raw_database_check": [
+                {
+                    "tenant_id": row[0],
+                    "vendor_name": row[1],
+                    "total_amount": row[2],
+                    "approval_status": row[3]
+                }
+                for row in raw_invoices
+            ],
+            "diagnosis": {
+                "total_invoices_in_db": len(raw_invoices),
+                "ask_vritti_direct_query": len(invoices_query),
+                "invoice_service_finds": len(service_invoices),
+                "problem_identified": len(invoices_query) == 0 and len(raw_invoices) > 0,
+                "recommendation": "Check tenant_id matching in Ask Vritti context"
+            }
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "error_type": type(e).__name__
+        }
+
+
+# Add this test endpoint to your src/api/v1/conversation.py
+
+@router.post("/debug/test-ask-vritti-direct")
+async def test_ask_vritti_direct(
+        test_message: str = "Show me pending invoices",
+        db: Session = Depends(get_db)
+):
+    """Test Ask Vritti AI agent directly with debugging"""
+    try:
+        # Create a test context exactly like the real chat
+        if not ask_vritti:
+            return {"error": "Ask Vritti not initialized"}
+
+        session_id = f"debug-{uuid.uuid4()}"
+        demo_tenant_id = "demo-tenant-id"
+        demo_user_id = "demo-user-id"
+
+        # Create context exactly like real chat
+        context = ask_vritti.create_conversation_context(
+            session_id=session_id,
+            tenant_id=demo_tenant_id,
+            user_id=demo_user_id
+        )
+
+        # Test intent classification
+        intent = ask_vritti.classify_intent(test_message)
+
+        # Test entity extraction
+        entities = ask_vritti.extract_entities(test_message)
+
+        # Test the full message processing
+        ai_response = await ask_vritti.process_message(test_message, context)
+
+        return {
+            "test_input": test_message,
+            "debug_info": {
+                "session_id": session_id,
+                "tenant_id": demo_tenant_id,
+                "user_id": demo_user_id,
+                "classified_intent": intent.value,
+                "extracted_entities": {
+                    "vendor_name": entities.vendor_name,
+                    "amount": entities.amount,
+                    "invoice_number": entities.invoice_number
+                }
+            },
+            "ai_response": {
+                "text": ai_response.text,
+                "intent": ai_response.intent.value,
+                "action_required": ai_response.action_required,
+                "llm_used": ai_response.llm_used.value if ai_response.llm_used else None,
+                "cost": ai_response.cost,
+                "confidence": ai_response.confidence
+            },
+            "context_after": {
+                "total_cost": context.total_cost,
+                "conversation_history_length": len(context.conversation_history)
+            }
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "error_type": type(e).__name__
+        }
+
 @router.get("/debug/raw-count")
 async def debug_raw_count(db: Session = Depends(get_db)):
     """Get raw count of records in database"""
