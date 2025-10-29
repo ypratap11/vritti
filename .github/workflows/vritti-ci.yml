@@ -48,7 +48,7 @@ jobs:
         run: safety check --json --output safety-report.json
 
       - name: Upload Security Reports
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v5
         if: always()
         with:
           name: security-reports
@@ -96,7 +96,7 @@ jobs:
           name: codecov-umbrella
 
       - name: Upload Coverage Reports
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v5
         with:
           name: coverage-reports-${{ matrix.python-version }}
           path: htmlcov/
@@ -160,7 +160,7 @@ jobs:
           pytest tests/integration/ -v --tb=short
 
       - name: Upload Test Results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v5
         if: always()
         with:
           name: integration-test-results
@@ -252,7 +252,7 @@ jobs:
             scripts/
 
       - name: Upload Build Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v5
         with:
           name: vritti-ai-build
           path: dist/
@@ -358,7 +358,7 @@ jobs:
           esac
 
       - name: Upload Results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v5
         with:
           name: nightly-${{ matrix.test-suite }}-results
           path: |
